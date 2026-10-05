@@ -7,12 +7,9 @@ import {
   Bot,
   CheckCircle2,
   Clock,
-  Cloud,
   Code2,
-  Database,
   FileText,
   GitBranch,
-  Gauge,
   LockKeyhole,
   Play,
   Radar,
@@ -25,280 +22,362 @@ import {
 } from "lucide-react"
 
 type IncidentKey = "checkout" | "latency" | "auth"
-type ToolState = "ready" | "running" | "complete" | "blocked"
+type ToolState = "ready" | "running" | "complete" | "blocked" | "approved"
 
 const incidents = {
   checkout: {
-    title: "Checkout API error spike",
+    title: "Checkout API 500 Surge",
     severity: "SEV-1",
     service: "payments-api",
-    impact: "14.8% checkout failures across EU traffic",
-    signal: "HTTP 500 rate jumped from 0.2% to 9.7% after deploy 8f42c1",
-    likelyCause: "Stripe webhook signature validation changed without updated secret",
-    eta: "11 min",
+    impact: "14.8% checkout failures across EU-West Kubernetes cluster",
+    signal: "HTTP 500 rate spiked from 0.2% → 9.7% after commit 8f42c1a",
+    likelyCause: "Stripe webhook HMAC signature secret mismatch on new replica pods",
+    eta: "9 min",
+    revenueAtRisk: "$42.7k / hr",
+    healthMap: { "web-edge": 96, "api-gateway": 89, "payments-api": 38, "orders-db": 84, "redis-queue": 72, "otel-collector": 99 },
   },
   latency: {
-    title: "Search latency regression",
+    title: "Vector Reranker P99 Regression",
     severity: "SEV-2",
-    service: "catalog-search",
-    impact: "p95 latency at 2.9s for premium customers",
-    signal: "Vector reranker queue depth increased after traffic shift",
-    likelyCause: "Embedding cache misses caused by new locale routing",
-    eta: "18 min",
+    service: "rag-search-worker",
+    impact: "p99 retrieval latency hit 2,940 ms for enterprise workspaces",
+    signal: "HNSW index cache eviction spike following multilingual query surge",
+    likelyCause: "Unbounded batch size on cross-encoder reranker worker pool",
+    eta: "14 min",
+    revenueAtRisk: "$11.4k / hr",
+    healthMap: { "web-edge": 98, "api-gateway": 94, "payments-api": 99, "orders-db": 92, "redis-queue": 44, "otel-collector": 97 },
   },
   auth: {
-    title: "Login failures for enterprise tenants",
+    title: "Enterprise OIDC Handshake Failure",
     severity: "SEV-1",
     service: "identity-gateway",
-    impact: "SSO login failure for 23 enterprise tenants",
-    signal: "OIDC callback rejects increased after certificate rotation",
-    likelyCause: "Expired cert chain cached in edge workers",
-    eta: "9 min",
+    impact: "SSO login rejections across 23 enterprise hospital & fintech tenants",
+    signal: "TLS x509 intermediate chain validation error on edge workers",
+    likelyCause: "Stale JWKS & intermediate cert cached in Cloudflare/Envoy edge nodes",
+    eta: "7 min",
+    revenueAtRisk: "$34.8k / hr",
+    healthMap: { "web-edge": 74, "api-gateway": 41, "payments-api": 97, "orders-db": 95, "redis-queue": 91, "otel-collector": 98 },
   },
-} satisfies Record<IncidentKey, { title: string; severity: string; service: string; impact: string; signal: string; likelyCause: string; eta: string }>
-
-const serviceGraph = [
-  { name: "web-app", health: 94, type: "frontend" },
-  { name: "api-gateway", health: 88, type: "edge" },
-  { name: "payments-api", health: 41, type: "api" },
-  { name: "orders-db", health: 79, type: "database" },
-  { name: "queue-worker", health: 68, type: "worker" },
-  { name: "observability", health: 96, type: "telemetry" },
-]
+} satisfies Record<
+  IncidentKey,
+  {
+    title: string
+    severity: string
+    service: string
+    impact: string
+    signal: string
+    likelyCause: string
+    eta: string
+    revenueAtRisk: string
+    healthMap: Record<string, number>
+  }
+>
 
 const toolCatalog = [
-  { name: "log_search", purpose: "Query traces and correlated logs", icon: TerminalSquare },
-  { name: "deploy_diff", purpose: "Compare latest release changes", icon: GitBranch },
-  { name: "runbook_lookup", purpose: "Retrieve incident playbooks", icon: FileText },
-  { name: "feature_flag", purpose: "Prepare safe rollback switch", icon: Code2 },
-  { name: "customer_impact", purpose: "Estimate accounts and revenue at risk", icon: Users },
-  { name: "policy_guard", purpose: "Require approval before risky actions", icon: LockKeyhole },
+  { id: "log_search", name: "otel_trace_correlator()", purpose: "Correlate distributed spans & 5xx logs", risky: false },
+  { id: "deploy_diff", name: "git_diff_inspector()", purpose: "Inspect commit 8f42c1a env & config delta", risky: false },
+  { id: "runbook_lookup", name: "sre_playbook_rag()", purpose: "Retrieve verified mitigation runbook", risky: false },
+  { id: "customer_impact", name: "sla_blast_radius()", purpose: "Quantify affected enterprise tenants", risky: false },
+  { id: "feature_flag", name: "k8s_canary_rollback()", purpose: "Roll back deployment & flush worker cache", risky: true },
+  { id: "status_page", name: "statuspage_broadcast()", purpose: "Publish signed incident advisory to tenants", risky: true },
 ]
-
-function buildRunbook(incident: (typeof incidents)[IncidentKey]) {
-  return [
-    `Freeze deploys touching ${incident.service}`,
-    "Collect top traces, logs, recent deploy diff, and customer impact",
-    `Validate hypothesis: ${incident.likelyCause}`,
-    "Prepare low-risk mitigation with rollback path",
-    "Publish customer-facing status update with ETA and owner",
-    "Create postmortem draft with timeline and prevention tasks",
-  ]
-}
 
 export default function Home() {
   const [incidentKey, setIncidentKey] = useState<IncidentKey>("checkout")
+  const [customSignal, setCustomSignal] = useState("")
   const [running, setRunning] = useState(false)
-  const [toolStates, setToolStates] = useState<ToolState[]>(["complete", "complete", "complete", "ready", "complete", "blocked"])
   const [approvalMode, setApprovalMode] = useState(true)
+  const [toolStates, setToolStates] = useState<ToolState[]>([
+    "complete",
+    "complete",
+    "complete",
+    "complete",
+    "blocked",
+    "blocked",
+  ])
   const [timeline, setTimeline] = useState(14)
+
   const incident = incidents[incidentKey]
-  const runbook = useMemo(() => buildRunbook(incident), [incident])
-  const risk = incident.severity === "SEV-1" ? 91 : 73
-  const automationReadiness = approvalMode ? 82 : 64
-  const affectedRevenue = incidentKey === "checkout" ? "$42.7k/hr" : incidentKey === "auth" ? "$31.2k/hr" : "$8.6k/hr"
+  const activeSignal = customSignal.trim() || incident.signal
+
+  function selectIncident(key: IncidentKey) {
+    setIncidentKey(key)
+    setCustomSignal("")
+    setToolStates(["complete", "complete", "complete", "complete", approvalMode ? "blocked" : "complete", approvalMode ? "blocked" : "complete"])
+  }
 
   function runCopilot() {
     setRunning(true)
-    setToolStates(["running", "ready", "ready", "ready", "ready", approvalMode ? "blocked" : "ready"])
-    window.setTimeout(() => setToolStates(["complete", "running", "ready", "ready", "ready", approvalMode ? "blocked" : "ready"]), 260)
-    window.setTimeout(() => setToolStates(["complete", "complete", "running", "ready", "ready", approvalMode ? "blocked" : "ready"]), 520)
-    window.setTimeout(() => setToolStates(["complete", "complete", "complete", "running", "running", approvalMode ? "blocked" : "running"]), 780)
+    setToolStates(["running", "ready", "ready", "ready", approvalMode ? "blocked" : "ready", approvalMode ? "blocked" : "ready"])
     window.setTimeout(() => {
-      setToolStates(["complete", "complete", "complete", "complete", "complete", approvalMode ? "blocked" : "complete"])
+      setToolStates(["complete", "running", "running", "ready", approvalMode ? "blocked" : "ready", approvalMode ? "blocked" : "ready"])
+    }, 300)
+    window.setTimeout(() => {
+      setToolStates(["complete", "complete", "complete", "running", approvalMode ? "blocked" : "running", approvalMode ? "blocked" : "ready"])
+    }, 650)
+    window.setTimeout(() => {
+      setToolStates([
+        "complete",
+        "complete",
+        "complete",
+        "complete",
+        approvalMode ? "blocked" : "complete",
+        approvalMode ? "blocked" : "complete",
+      ])
       setRunning(false)
-      setTimeline((value) => value + 1)
-    }, 1100)
+      setTimeline((v) => v + 1)
+    }, 1050)
   }
 
+  function approveTool(index: number) {
+    setToolStates((prev) => prev.map((st, idx) => (idx === index ? "approved" : st)))
+  }
+
+  const approvedCount = toolStates.filter((s) => s === "complete" || s === "approved").length
+  const readiness = Math.round((approvedCount / toolStates.length) * 100)
+
+  const postmortemMarkdown = useMemo(() => {
+    return `### Incident Postmortem Draft (${incident.severity})
+- **Primary Degraded Service:** \`${incident.service}\`
+- **Telemetry Trigger:** ${activeSignal}
+- **Root Cause Hypothesis:** ${incident.likelyCause}
+- **Blast Radius & Exposure:** ${incident.impact} (${incident.revenueAtRisk})
+- **Mitigation Status:** ${
+      toolStates[4] === "approved" || toolStates[4] === "complete"
+        ? "✅ Rollback & cache purge executed with human-in-the-loop sign-off."
+        : "⏳ Diagnostic tools complete; awaiting human SRE approval for production rollback."
+    }`
+  }, [incident, activeSignal, toolStates])
+
   return (
-    <main className="min-h-screen bg-[#070b12] text-slate-50">
-      <header className="border-b border-white/10 bg-[#070b12]/90 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
+    <main className="min-h-screen bg-[#07050d] text-slate-100">
+      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_15%_15%,rgba(168,85,247,0.14),transparent_38%),radial-gradient(circle_at_85%_80%,rgba(236,72,153,0.1),transparent_42%)]" />
+
+      <header className="relative border-b border-purple-500/20 bg-[#0b0716]/85 backdrop-blur-md">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-6 py-4">
           <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-emerald-300 text-slate-950">
-              <Bot className="h-6 w-6" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-purple-500/40 bg-gradient-to-br from-purple-600/30 to-fuchsia-600/20 text-purple-300">
+              <Radar className="h-5 w-5" />
             </div>
             <div>
-              <div className="text-xl font-black">OpsPilot AI</div>
-              <div className="text-xs text-slate-400">Agentic incident response platform</div>
+              <div className="flex items-center gap-2">
+                <span className="text-lg font-black tracking-tight text-white">OpsPilot SRE Incident Copilot</span>
+                <span className="rounded-full border border-purple-500/30 bg-purple-950/60 px-2.5 py-0.5 font-mono text-[11px] font-semibold text-purple-300">
+                  Human-in-the-Loop Governance
+                </span>
+              </div>
+              <p className="text-xs text-slate-400">
+                Automated OTel Trace Triage · Service Dependency Topology · Gated Rollback Execution
+              </p>
             </div>
           </div>
-          <button
-            onClick={runCopilot}
-            className="flex items-center gap-2 rounded-md bg-emerald-300 px-4 py-3 text-sm font-black text-slate-950"
-          >
-            {running ? <RefreshCcw className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-            Run Copilot
-          </button>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setApprovalMode((v) => !v)}
+              className={`rounded-xl border px-3 py-2 font-mono text-xs font-bold transition ${
+                approvalMode
+                  ? "border-amber-500/40 bg-amber-950/40 text-amber-200"
+                  : "border-rose-500/40 bg-rose-950/40 text-rose-200"
+              }`}
+            >
+              {approvalMode ? "🔒 Strict Human Approval Gate: ON" : "⚡ Autonomous Write Execution: ON"}
+            </button>
+            <button
+              onClick={runCopilot}
+              className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-purple-500 to-fuchsia-500 px-4 py-2.5 text-xs font-bold text-white shadow-lg shadow-purple-500/25 hover:from-purple-600 hover:to-fuchsia-600"
+            >
+              {running ? <RefreshCcw className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              Run Diagnostic Sweep
+            </button>
+          </div>
         </div>
       </header>
 
-      <section className="mx-auto grid max-w-7xl gap-6 px-6 py-8 lg:grid-cols-[360px_1fr]">
+      <section className="relative mx-auto grid max-w-7xl gap-6 px-6 py-8 lg:grid-cols-[380px_1fr]">
+        {/* Left Incident Queue */}
         <aside className="space-y-5">
-          <div className="rounded-lg border border-white/10 bg-white/[0.04] p-5">
-            <div className="mb-4 flex items-center gap-2 text-sm text-emerald-200">
-              <Radar className="h-4 w-4" />
-              Incident queue
+          <div className="rounded-2xl border border-purple-500/25 bg-[#0e091d]/90 p-5">
+            <div className="mb-3 text-xs font-mono uppercase tracking-wider text-purple-300">
+              Active PagerDuty / OTel Alerts
             </div>
-            <div className="space-y-3">
+            <div className="space-y-2.5">
               {(Object.keys(incidents) as IncidentKey[]).map((key) => (
                 <button
                   key={key}
-                  onClick={() => setIncidentKey(key)}
-                  className={`w-full rounded-md border p-4 text-left transition ${
-                    incidentKey === key ? "border-emerald-300 bg-emerald-300/10" : "border-white/10 bg-slate-950"
+                  onClick={() => selectIncident(key)}
+                  className={`w-full rounded-xl border p-3.5 text-left transition ${
+                    incidentKey === key
+                      ? "border-purple-400 bg-purple-950/50"
+                      : "border-purple-500/15 bg-[#080511] hover:border-purple-500/35"
                   }`}
                 >
                   <div className="flex items-center justify-between">
-                    <span className="font-bold">{incidents[key].title}</span>
-                    <span className="rounded bg-red-300 px-2 py-1 text-xs font-black text-slate-950">{incidents[key].severity}</span>
+                    <span className="text-sm font-bold text-white">{incidents[key].title}</span>
+                    <span className="rounded-md border border-rose-500/40 bg-rose-500/20 px-2 py-0.5 font-mono text-[10px] font-black text-rose-200">
+                      {incidents[key].severity}
+                    </span>
                   </div>
-                  <p className="mt-2 text-sm text-slate-400">{incidents[key].service}</p>
+                  <div className="mt-1 font-mono text-xs text-purple-300">{incidents[key].service}</div>
+                  <p className="mt-1 text-xs text-slate-400">{incidents[key].impact}</p>
                 </button>
               ))}
             </div>
+
+            <div className="mt-4">
+              <label className="mb-1.5 block font-mono text-xs text-purple-300">
+                INJECT CUSTOM TELEMETRY ANOMALY
+              </label>
+              <textarea
+                value={customSignal}
+                onChange={(e) => setCustomSignal(e.target.value)}
+                className="h-24 w-full resize-none rounded-xl border border-purple-500/25 bg-[#07050d] p-3 font-mono text-xs text-white outline-none focus:border-purple-400"
+                placeholder="Paste custom stack trace, OTel alert, or K8s pod crash log to override the incident signal..."
+              />
+            </div>
           </div>
 
-          <div className="rounded-lg border border-white/10 bg-[#f5f2ea] p-5 text-slate-950">
-            <div className="flex items-center gap-2 font-black">
-              <ShieldCheck className="h-5 w-5" />
-              Governance mode
+          {/* Service Mesh Health */}
+          <div className="rounded-2xl border border-purple-500/20 bg-[#0e091d]/90 p-5">
+            <div className="mb-3 text-xs font-mono uppercase tracking-wider text-purple-300">
+              Live Service Dependency Mesh
             </div>
-            <p className="mt-2 text-sm leading-6 text-slate-700">
-              Risky actions require approval, audit logs, and rollback instructions before execution.
-            </p>
-            <button
-              onClick={() => setApprovalMode((value) => !value)}
-              className="mt-4 w-full rounded-md bg-slate-950 px-4 py-2 text-sm font-bold text-white"
-            >
-              Approval {approvalMode ? "Required" : "Relaxed"}
-            </button>
+            <div className="grid grid-cols-2 gap-2.5">
+              {Object.entries(incident.healthMap).map(([svc, health]) => {
+                const degraded = health < 60
+                const warn = health >= 60 && health < 85
+                return (
+                  <div
+                    key={svc}
+                    className={`rounded-xl border p-3 ${
+                      degraded
+                        ? "border-rose-500/40 bg-rose-950/30"
+                        : warn
+                          ? "border-amber-500/30 bg-amber-950/20"
+                          : "border-purple-500/15 bg-[#080511]"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between font-mono text-xs">
+                      <span className="truncate font-bold text-white">{svc}</span>
+                      <span
+                        className={
+                          degraded ? "font-black text-rose-300" : warn ? "text-amber-300" : "text-emerald-300"
+                        }
+                      >
+                        {health}%
+                      </span>
+                    </div>
+                    <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+                      <div
+                        className={`h-full ${
+                          degraded ? "bg-rose-500" : warn ? "bg-amber-400" : "bg-emerald-400"
+                        }`}
+                        style={{ width: `${health}%` }}
+                      />
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
           </div>
         </aside>
 
+        {/* Right Operations Workbench */}
         <section className="space-y-6">
-          <div className="grid gap-4 md:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {[
-              ["Severity", incident.severity],
-              ["Risk", `${risk}%`],
-              ["Revenue at risk", affectedRevenue],
-              ["ETA", incident.eta],
+              ["Degraded Service", incident.service],
+              ["Revenue Exposure", incident.revenueAtRisk],
+              ["Estimated MTTR", incident.eta],
+              ["Execution Progress", `${readiness}% (${approvedCount}/6 tools)`],
             ].map(([label, value]) => (
-              <div key={label} className="rounded-lg border border-white/10 bg-white/[0.04] p-4">
-                <div className="text-sm text-slate-400">{label}</div>
-                <div className="mt-2 text-2xl font-black text-emerald-200">{value}</div>
+              <div key={label} className="rounded-2xl border border-purple-500/20 bg-[#0e091d]/90 p-4">
+                <div className="text-xs font-mono uppercase tracking-wider text-slate-400">{label}</div>
+                <div className="mt-2 text-xl font-black text-white">{value}</div>
               </div>
             ))}
           </div>
 
-          <div className="rounded-lg border border-white/10 bg-white/[0.04] p-6">
-            <div className="mb-5 flex flex-col justify-between gap-4 lg:flex-row lg:items-start">
-              <div>
-                <div className="mb-2 flex items-center gap-2 text-sm font-bold text-red-200">
-                  <AlertTriangle className="h-4 w-4" />
-                  Active incident
-                </div>
-                <h1 className="text-4xl font-black">{incident.title}</h1>
-                <p className="mt-3 max-w-3xl leading-7 text-slate-300">{incident.impact}. {incident.signal}.</p>
+          {/* Root Cause & Signal Banner */}
+          <div className="rounded-2xl border border-purple-500/25 bg-[#0e091d]/95 p-6">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="rounded-xl border border-purple-500/15 bg-[#080511] p-4">
+                <div className="text-xs font-mono uppercase text-purple-300">Correlated Anomaly Signal</div>
+                <p className="mt-1.5 font-mono text-xs leading-relaxed text-slate-200">{activeSignal}</p>
               </div>
-              <div className="rounded-lg border border-white/10 bg-slate-950 p-4">
-                <div className="text-sm text-slate-400">Likely root cause</div>
-                <div className="mt-2 max-w-sm font-bold text-cyan-100">{incident.likelyCause}</div>
+              <div className="rounded-xl border border-purple-500/15 bg-[#080511] p-4">
+                <div className="text-xs font-mono uppercase text-fuchsia-300">Root Cause Hypothesis (Confidence 94%)</div>
+                <p className="mt-1.5 text-xs leading-relaxed text-slate-200">{incident.likelyCause}</p>
               </div>
-            </div>
-
-            <div className="grid gap-4 md:grid-cols-6">
-              {serviceGraph.map((service) => (
-                <div key={service.name} className="rounded-md border border-white/10 bg-slate-950 p-3">
-                  <div className="mb-3 flex items-center justify-between">
-                    {service.type === "database" ? <Database className="h-4 w-4 text-cyan-200" /> : service.type === "api" ? <Server className="h-4 w-4 text-orange-200" /> : <Cloud className="h-4 w-4 text-emerald-200" />}
-                    <span className={service.health < 60 ? "text-red-200" : service.health < 80 ? "text-amber-200" : "text-emerald-200"}>{service.health}%</span>
-                  </div>
-                  <div className="text-sm font-bold">{service.name}</div>
-                  <div className="mt-2 h-2 rounded-full bg-white/10">
-                    <div className={`h-2 rounded-full ${service.health < 60 ? "bg-red-300" : service.health < 80 ? "bg-amber-300" : "bg-emerald-300"}`} style={{ width: `${service.health}%` }} />
-                  </div>
-                </div>
-              ))}
             </div>
           </div>
 
-          <div className="grid gap-6 xl:grid-cols-[1fr_380px]">
-            <div className="rounded-lg border border-white/10 bg-white/[0.04] p-5">
-              <div className="mb-4 flex items-center gap-2">
-                <TerminalSquare className="h-5 w-5 text-cyan-300" />
-                <h2 className="text-xl font-bold">Tool Calls</h2>
+          {/* Agent Tool-Call Governance Grid */}
+          <div className="rounded-2xl border border-purple-500/25 bg-[#0e091d]/95 p-6">
+            <div className="mb-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <TerminalSquare className="h-5 w-5 text-purple-400" />
+                <h2 className="text-lg font-bold text-white">Agentic Tool-Call Execution & Human Approval Gates</h2>
               </div>
-              <div className="grid gap-3 md:grid-cols-2">
-                {toolCatalog.map((tool, index) => (
-                  <div key={tool.name} className="rounded-md border border-white/10 bg-slate-950 p-4">
-                    <div className="mb-3 flex items-center justify-between">
-                      <tool.icon className="h-5 w-5 text-cyan-200" />
+              <span className="font-mono text-xs text-slate-400">Read-only tools run automatically; write actions require sign-off</span>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              {toolCatalog.map((tool, index) => {
+                const st = toolStates[index]
+                return (
+                  <div
+                    key={tool.id}
+                    className={`rounded-xl border p-4 transition ${
+                      st === "blocked"
+                        ? "border-amber-500/40 bg-amber-950/15"
+                        : st === "approved"
+                          ? "border-emerald-500/40 bg-emerald-950/20"
+                          : "border-purple-500/20 bg-[#080511]"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono text-xs font-bold text-white">{tool.name}</span>
                       <span
-                        className={`rounded px-2 py-1 text-xs font-bold ${
-                          toolStates[index] === "complete"
-                            ? "bg-emerald-300 text-slate-950"
-                            : toolStates[index] === "running"
-                              ? "bg-cyan-300 text-slate-950"
-                              : toolStates[index] === "blocked"
-                                ? "bg-amber-300 text-slate-950"
-                                : "bg-white/10 text-slate-300"
+                        className={`rounded-full px-2.5 py-0.5 font-mono text-[10px] font-bold uppercase ${
+                          st === "complete" || st === "approved"
+                            ? "bg-emerald-500/20 text-emerald-300"
+                            : st === "blocked"
+                              ? "bg-amber-500/20 text-amber-300"
+                              : "bg-purple-500/20 text-purple-300"
                         }`}
                       >
-                        {toolStates[index]}
+                        {st === "blocked" ? "AWAITING SRE APPROVAL" : st}
                       </span>
                     </div>
-                    <div className="font-bold">{tool.name}</div>
-                    <div className="mt-1 text-sm text-slate-400">{tool.purpose}</div>
+                    <p className="mt-1.5 text-xs text-slate-400">{tool.purpose}</p>
+
+                    {st === "blocked" && (
+                      <button
+                        onClick={() => approveTool(index)}
+                        className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 px-3 py-1.5 font-mono text-xs font-bold text-slate-950 shadow hover:from-amber-400 hover:to-orange-400"
+                      >
+                        <LockKeyhole className="h-3.5 w-3.5" /> Approve & Execute Write Action
+                      </button>
+                    )}
                   </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="space-y-6">
-              <div className="rounded-lg border border-white/10 bg-white/[0.04] p-5">
-                <div className="mb-4 flex items-center gap-2">
-                  <Gauge className="h-5 w-5 text-emerald-300" />
-                  <h2 className="text-xl font-bold">Automation Readiness</h2>
-                </div>
-                <div className="text-5xl font-black text-emerald-200">{automationReadiness}%</div>
-                <div className="mt-4 h-3 rounded-full bg-white/10">
-                  <div className="h-3 rounded-full bg-emerald-300" style={{ width: `${automationReadiness}%` }} />
-                </div>
-                <p className="mt-4 text-sm leading-6 text-slate-300">
-                  Recommended: execute read-only diagnostics automatically, require approval for rollback and customer messaging.
-                </p>
-              </div>
-
-              <div className="rounded-lg border border-white/10 bg-[#f5f2ea] p-5 text-slate-950">
-                <div className="mb-3 flex items-center gap-2 font-black">
-                  <Activity className="h-5 w-5" />
-                  Executive summary
-                </div>
-                <p className="text-sm leading-6 text-slate-700">
-                  {incident.service} is the primary degraded service. Estimated mitigation is {incident.eta}; revenue exposure is {affectedRevenue}. A postmortem draft and customer update are ready.
-                </p>
-              </div>
+                )
+              })}
             </div>
           </div>
 
-          <div className="rounded-lg border border-white/10 bg-white/[0.04] p-5">
-            <div className="mb-4 flex items-center gap-2">
-              <Zap className="h-5 w-5 text-amber-300" />
-              <h2 className="text-xl font-bold">Runbook Plan</h2>
+          {/* Automated Postmortem Draft */}
+          <div className="rounded-2xl border border-purple-500/20 bg-[#0e091d]/90 p-6">
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <FileText className="h-5 w-5 text-purple-400" />
+                <h2 className="text-lg font-bold text-white">Live Auto-Generated SRE Postmortem</h2>
+              </div>
+              <span className="font-mono text-xs text-purple-300">Timeline T+{timeline}m</span>
             </div>
-            <div className="grid gap-3 md:grid-cols-3">
-              {runbook.map((step, index) => (
-                <div key={step} className="rounded-md border border-white/10 bg-slate-950 p-4">
-                  <div className="mb-3 flex items-center gap-2">
-                    {index < 3 ? <CheckCircle2 className="h-4 w-4 text-emerald-300" /> : <Clock className="h-4 w-4 text-slate-500" />}
-                    <span className="text-xs text-slate-500">T+{timeline + index * 3}m</span>
-                  </div>
-                  <div className="font-bold">{step}</div>
-                </div>
-              ))}
-            </div>
+            <pre className="whitespace-pre-wrap rounded-xl border border-purple-500/15 bg-[#080511] p-4 font-mono text-xs leading-relaxed text-slate-200">
+              {postmortemMarkdown}
+            </pre>
           </div>
         </section>
       </section>
