@@ -144,8 +144,8 @@ export default function Home() {
 - **Blast Radius & Exposure:** ${incident.impact} (${incident.revenueAtRisk})
 - **Mitigation Status:** ${
       toolStates[4] === "approved" || toolStates[4] === "complete"
-        ? "✅ Rollback & cache purge executed with human-in-the-loop sign-off."
-        : "⏳ Diagnostic tools complete; awaiting human SRE approval for production rollback."
+        ? "The simulated action is marked complete in this UI; no infrastructure command was executed."
+        : "Simulated diagnostics are complete; a real deployment would require an independently implemented approval and execution path."
     }`
   }, [incident, activeSignal, toolStates])
 
@@ -161,13 +161,13 @@ export default function Home() {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="text-lg font-black tracking-tight text-white">OpsPilot SRE Incident Copilot</span>
+                <span className="text-lg font-black tracking-tight text-white">OpsPilot SRE Copilot Prototype</span>
                 <span className="rounded-full border border-purple-500/30 bg-purple-950/60 px-2.5 py-0.5 font-mono text-[11px] font-semibold text-purple-300">
                   Human-in-the-Loop Governance
                 </span>
               </div>
               <p className="text-xs text-slate-400">
-                Automated OTel Trace Triage · Service Dependency Topology · Gated Rollback Execution
+                Simulated OTel triage · mock service topology · approval-flow prototype
               </p>
             </div>
           </div>
@@ -181,18 +181,24 @@ export default function Home() {
                   : "border-rose-500/40 bg-rose-950/40 text-rose-200"
               }`}
             >
-              {approvalMode ? "🔒 Strict Human Approval Gate: ON" : "⚡ Autonomous Write Execution: ON"}
+              {approvalMode ? "🔒 Simulated Approval Gate: ON" : "⚡ Simulated Approval Gate: OFF"}
             </button>
             <button
               onClick={runCopilot}
               className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-purple-500 to-fuchsia-500 px-4 py-2.5 text-xs font-bold text-white shadow-lg shadow-purple-500/25 hover:from-purple-600 hover:to-fuchsia-600"
             >
               {running ? <RefreshCcw className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-              Run Diagnostic Sweep
+              Simulate Diagnostic Sweep
             </button>
           </div>
         </div>
       </header>
+
+      <div role="note" className="mx-auto max-w-7xl px-6 pt-5">
+        <div className="rounded-xl border border-amber-500/25 bg-amber-950/20 px-4 py-3 text-sm leading-relaxed text-amber-100">
+          <strong>Simulation only:</strong> the incidents, telemetry, causes, health values, runbooks and tool outcomes are predefined demo data. This page does not contact OpenTelemetry, Datadog, Kubernetes, feature flags or a status-page API, and it performs no production action.
+        </div>
+      </div>
 
       <section className="relative mx-auto grid max-w-7xl gap-6 px-6 py-8 lg:grid-cols-[380px_1fr]">
         {/* Left Incident Queue */}
